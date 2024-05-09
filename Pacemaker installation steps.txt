@@ -8,28 +8,28 @@ rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org
 wget http://www.elrepo.org/elrepo-release-7.0-5.el7.elrepo.noarch.rpm
 rpm -i epel-release-7-14.noarch.rpm
 yum -y install drbd90-utils kmod-drbd90 ntp ntpdate
- 
+
 wget https://download-ib01.fedoraproject.org/pub/epel/7/x86_64/Packages/e/epel-release-7-14.noarch.rpm
 rpm -Uvh epel-release*rpm
 yum install dkms
- 
+
 firewall-cmd --permanent --add-service=high-availability
 firewall-cmd --add-service=high-availability
- 
+
 sed -i "s/^SELINUX=.*/SELINUX=permissive/g" /etc/selinux/config
 setenforce 0
 semanage permissive -a drbd_t
- 
- 
+
+
 pvcreate /dev/sdb
 vgcreate datavg /dev/sdb
 lvcreate -l 100%VG  -n lvnfs001  datavg
- 
+
 echo "h1gHs3cret" | passwd hacluster --stdin
- 
- 
+
+
 vim /etc/drbd.d/d0.res
- 
+
 resource d0 {
         net {
                 protocol C;
@@ -40,12 +40,12 @@ resource d0 {
         device /dev/drbd0;
         disk /dev/datavg/lvnfs001;
         meta-disk internal;
-        on xxxxxxxxx {
-                address X.X.X.X:7788;
+        on IOCPINTSTD00165 {
+                address 10.117.90.45:7788;
                 node-id 0;
         }
-        on xxxxxxxxx {
-                address xxxxxxxxx:7788;
+        on IOCPINTSTD00167 {
+                address 10.117.90.46:7788;
                 node-id 1;
         }
         disk {
@@ -59,69 +59,73 @@ resource d0 {
                 c-max-rate 720M;
         }
         connection-mesh {
-                hosts cluster1 cluster2;
+                hosts IOCPINTSTD00165 IOCPINTSTD00167;
         }
 }
 #------------------------
- 
+
 systemctl enable pcsd
 systemctl enable corosync
 systemctl enable pacemaker
+ 
 systemctl start pcsd
 systemctl start corosync
 systemctl start pacemaker
- 
+
 drbdadm create-md d0
 drbdadm down d0
 drbdadm up d0
- 
- 
+
+
 Note:service start up errors:
 https://bugzilla.redhat.com/show_bug.cgi?id=1273288
- 
- 
+
+
+
 Only on Master node:
 -------------------
 drbdadm --force primary d0
 mkfs.xfs /dev/drbd0
+ 
 mount /dev/drbd0 /mnt
 chmod -R 777 /mnt
 umount /mnt
- 
+
 Only on Slave node:
 -------------------
 drbdadm secondary  d0
 drbdadm status
- 
- 
+
+
 All nodes:
 ---------
 disable proxy now
- 
- 
+
+
 Only on Master node:
 -------------------
-pcs cluster auth cluster1 cluster1
-pcs cluster setup --force --name nfs_cluster cluster1 cluster1
+pcs cluster auth IOCPINTSTD00165 IOCPINTSTD00167
+pcs cluster setup --force --name nfs_cluster IOCPINTSTD00165 IOCPINTSTD00167
 pcs cluster start --all
 pcs cluster enable --all
+ 
 pcs property set stonith-enabled=false
 pcs property set no-quorum-policy=ignore
- 
+
 pcs resource create nfs_vip ocf:heartbeat:IPaddr2 ip=10.125.89.253 nic=ens160 cidr_netmask=32 op monitor interval=10s
 pcs resource defaults resource-stickiness=100
- 
- 
+
+
 systemctl start nfs
 systemctl enable nfs
- 
+
 DRBDRES=d0
 pcs cluster cib add_drbd
 pcs -f add_drbd resource create nfsserver_data ocf:linbit:drbd drbd_resource=$DRBDRES op monitor interval=60s
 pcs -f add_drbd resource master nfsserver_data_sync nfsserver_data master-max=1 master-node-max=1 clone-max=2 clone-node-max=1 notify=true
 pcs cluster cib-push add_drbd
 rm -rf add_drbd
- 
+
 pcs cluster cib fs_cfg
 pcs -f fs_cfg resource create nfsfs Filesystem device="/dev/drbd0" directory="/data" fstype="xfs" --group nfsgrp
 pcs -f fs_cfg constraint colocation add nfsserver_data_sync nfsgrp INFINITY with-rsc-role=Master
@@ -129,66 +133,156 @@ pcs -f fs_cfg constraint order nfsserver_data_sync then start nfsgrp
 pcs -f fs_cfg resource create nfsd nfsserver nfs_shared_infodir=/data/nfsinfo --group nfsgrp
 pcs -f fs_cfg resource create nfsroot exportfs clientspec="*" options=rw,sync,no_root_squash directory=/data fsid=0 --group nfsgrp
 pcs cluster cib-push fs_cfg
- 
+
 systemctl enable --now corosync
 systemctl enable --now pacemaker
- 
+
 systemctl stop pcsd
 systemctl start pcsd
 systemctl start corosync
 systemctl start pacemaker
- 
- 
+
+
 Post Installation check on both nodes:
 -------------------------------------
 #pcs status
 #pcs resource
 #drbdadm status
- 
+
 Sample outputs:
 --------------
- 
-[root@cluster1 ~]# pcs status
+
+[root@IOCPINTSTD00167 ~]# pcs status
 Cluster name: nfs_cluster
 Stack: corosync
-Current DC: cluster1 (version 1.1.23-1.el7_9.1-9acf116022) - partition with quorum
+Current DC: IOCPINTSTD00167 (version 1.1.23-1.el7_9.1-9acf116022) - partition with quorum
 Last updated: Tue Apr 26 17:41:55 2022
-Last change: Tue Apr 26 16:27:15 2022 by root via cibadmin on cluster1
- 
+Last change: Tue Apr 26 16:27:15 2022 by root via cibadmin on IOCPINTSTD00165
+
 2 nodes configured
 6 resource instances configured
- 
-Online: [ cluster1 cluster2 ]
- 
+
+Online: [ IOCPINTSTD00165 IOCPINTSTD00167 ]
+
 Full list of resources:
- 
-nfs_vip        (ocf::heartbeat:IPaddr2):       Started cluster1
-Master/Slave Set: nfsserver_data_sync [nfsserver_data]
-     Masters: [ cluster1 ]
-     Slaves: [ cluster2 ]
-Resource Group: nfsgrp
-     nfsfs      (ocf::heartbeat:Filesystem):    Started cluster1
-     nfsd       (ocf::heartbeat:nfsserver):     Started cluster1
-     nfsroot    (ocf::heartbeat:exportfs):      Started cluster1
- 
+
+ nfs_vip        (ocf::heartbeat:IPaddr2):       Started IOCPINTSTD00167
+ Master/Slave Set: nfsserver_data_sync [nfsserver_data]
+     Masters: [ IOCPINTSTD00167 ]
+     Slaves: [ IOCPINTSTD00165 ]
+ Resource Group: nfsgrp
+     nfsfs      (ocf::heartbeat:Filesystem):    Started IOCPINTSTD00167
+     nfsd       (ocf::heartbeat:nfsserver):     Started IOCPINTSTD00167
+     nfsroot    (ocf::heartbeat:exportfs):      Started IOCPINTSTD00167
+
 Daemon Status:
   corosync: active/enabled
   pacemaker: active/enabled
   pcsd: active/enabled
-[root@cluster1 ~]# pcs resource
-nfs_vip        (ocf::heartbeat:IPaddr2):       Started cluster1
-Master/Slave Set: nfsserver_data_sync [nfsserver_data]
-     Masters: [ cluster1 ]
-     Slaves: [ cluster2 ]
-Resource Group: nfsgrp
-     nfsfs      (ocf::heartbeat:Filesystem):    Started cluster1
-     nfsd       (ocf::heartbeat:nfsserver):     Started cluster1
-     nfsroot    (ocf::heartbeat:exportfs):      Started cluster1
-[root@cluster1 ~]# drbdadm status
+[root@IOCPINTSTD00167 ~]# pcs resource
+ nfs_vip        (ocf::heartbeat:IPaddr2):       Started IOCPINTSTD00167
+ Master/Slave Set: nfsserver_data_sync [nfsserver_data]
+     Masters: [ IOCPINTSTD00167 ]
+     Slaves: [ IOCPINTSTD00165 ]
+ Resource Group: nfsgrp
+     nfsfs      (ocf::heartbeat:Filesystem):    Started IOCPINTSTD00167
+     nfsd       (ocf::heartbeat:nfsserver):     Started IOCPINTSTD00167
+     nfsroot    (ocf::heartbeat:exportfs):      Started IOCPINTSTD00167
+[root@IOCPINTSTD00167 ~]# drbdadm status
 d0 role:Primary
   disk:UpToDate
-  cluster1 connection:StandAlone
- 
-[root@cluster1 ~]#
- 
+  IOCPINTSTD00165 connection:StandAlone
+
+[root@IOCPINTSTD00167 ~]#
+
 ========================================================================
+
+
+Data migration from source to destionation cluster procdure:
+------------------------------------------------------------
+(i)Step1: passwordless authention need to clreate source to destionation
+
+Source cluster:
+--------------
+create pubkey source node:
+
+#ssh-keygen -t rsa
+#cat id_rsa.pub ( copy content from this file)
+
+Destination cluster:
+-------------------
+#mkdir .ssh
+#chmod 700 .ssh
+#cd .ssh
+#vi authorized_keys ( uppend the content which we copied from source cluster pub key file)
+
+#vi /etc/ssh/sshd_config  ( update the below values in sshd_config file)
+PermitRootLogin without-password
+PasswordAuthentication no
+
+
+#systemctl restart sshd ( restart the sshd service)
+
+Now verify the password less authentication from source to destination cluster.
+------------------
+
+(ii)Step 2: copy the data from source cluster to destionation cluster.
+
+Destination cluster:
+-------------------
+#cd /data/
+#tar -czvf nfsinfo_backup.tar.gz nfsinfo/
+
+Source Cluster:
+--------------
+#rsync -avzcP --exclude 'nfsinfo' /data/ IOCPINTSTD00165:/data/
+
+
+
+
+
+
+
+
+
+
+
+Failorver check: post installtion ( only if required)
+pcs cluster stop IOCPINTSTD00157
+
+
+rsync between source cluster to destination cluseter
+
+#sudo rsync -avzcP --exclude 'nfsinfo' /data/ IOCPINTSTD00170:/data/
+rsync -avzcP --exclude 'test-dir' /tmp/test/ IOCPINTSTD00165:/tmp/test/
+
+
+[root@IOCPINTSTD00083 data]# date
+Fri Apr 22 18:54:22 CEST 2022
+
+sent 6,061,514,075 bytes  received 18,700 bytes  28,795,880.17 bytes/sec
+total size is 6,187,423,300  speedup is 1.02
+
+[root@IOCPINTSTD00083 data]# date
+Fri Apr 22 18:59:07 CEST 2022
+
+ansible-playbook -i .ini playbooks/setup_selinux.yaml
+ansible-playbook -i .ini playbooks/setup_drbd.yaml
+ansible-playbook -i .ini playbooks/setup_nfs.yaml
+ansible-playbook -i .ini playbooks/setup_cluster.yaml
+ansible-playbook -i .ini playbooks/setup_exporter.yaml
+
+
+Actionp lan:
+
+
+New NFS server master ID: PQCAASTMSTD0011 
+
+Old NFS server VIP : 10.117.56.126
+
+
+rsync -avzcP --exclude 'nfsinfo' /data/ PQCAASTMSTD0011:/data/
+
+
+SPB_NONPRD_VIP - 10.142.231.29
+
